@@ -1,98 +1,109 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Platform, StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { WebView } from 'react-native-webview';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+// Change this to your web app's URL
+const TARGET_URL = 'http://localhost:3000/';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  return <WebWrapper url={TARGET_URL} />;
+}
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+function WebWrapper({ url }: { url: string }) {
+  const insets = useSafeAreaInsets();
+  const webviewRef = useRef<WebView | null>(null);
+  const [iframeSrc, setIframeSrc] = useState(url);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  // detect web platform in a type-safe way
+  const isWeb = Platform.OS === 'web' || (typeof window !== 'undefined' && typeof document !== 'undefined');
+
+  // Setup WebSocket to listen for reload signals and trigger reloads appropriately.
+  useEffect(() => {
+    let host: string | null = null;
+    try {
+      const u = new URL(url);
+      host = u.host;
+    } catch {
+      // fallback: do nothing
+    }
+
+    // choose secure websocket when target is https
+    const protocol = url.startsWith('https') ? 'wss' : 'ws';
+    if (!host) return;
+
+    const wsUrl = `${protocol}://${host}/ws`;
+    let socket: WebSocket | null = null;
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch (err) {
+      console.warn('Failed to create WebSocket:', err);
+      return;
+    }
+
+    socket.onopen = () => {
+      console.log('ws open', wsUrl);
+    };
+
+    socket.onmessage = (ev) => {
+      try {
+        const msg = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data;
+        if (msg?.type === 'hot-reload') {
+            if (isWeb) {
+            // update iframe src with cache-buster
+            try {
+              const u = new URL(url);
+              u.searchParams.set('_t', String(Date.now()));
+              setIframeSrc(u.toString());
+            } catch {
+              setIframeSrc(`${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`);
+            }
+          } else {
+            // native webview reload
+            webviewRef.current?.reload();
+          }
+        }
+      } catch {
+        // ignore malformed messages
+      }
+    };
+
+    socket.onerror = (err) => console.warn('ws error', err);
+    socket.onclose = () => console.log('ws closed');
+
+    return () => {
+      if (socket) {
+        try {
+          socket.close();
+        } catch {}
+      }
+    };
+  }, [url, isWeb]);
+
+  // On native platforms use react-native-webview and apply top padding from safe area insets
+  if (!isWeb) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top }]}> 
+        <WebView ref={(r) => { webviewRef.current = r; }} originWhitelist={["*"]} source={{ uri: url }} style={styles.container} />
+      </View>
+    );
+  }
+
+  // web
+  return (
+    <div style={{ paddingTop: 'env(safe-area-inset-top)', height: '100vh', boxSizing: 'border-box' }}>
+      <iframe
+        ref={(r) => { iframeRef.current = r; }}
+        src={iframeSrc}
+        title="Web App"
+        style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
+        sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals"
+      />
+    </div>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-  },
+  container: { flex: 1 },
 });
